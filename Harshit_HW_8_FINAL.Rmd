@@ -1,0 +1,274 @@
+---
+title: "HW 8 IST 707"
+author: "Harshit Joshi"
+date: "2023-04-03"
+output: html_document
+---
+
+```{r}
+#install.packages('tidyverse')
+library(tidyverse)
+#I had to use the following command to remove lock inorder to install package. 
+#options("install.lock"=FALSE)
+#install.packages("rsample")
+#options("install.lock"=FALSE)
+#install.packages("sfsmisc")
+library(rsample)  # data splitting
+#install.packages('caret')
+library(caret)    # implementing with caret
+```
+
+
+
+
+```{r}
+review = data.frame(read.table('review.txt'))
+```
+
+```{r}
+review = review[c(2:93),1:3]
+```
+
+```{r}
+sum(is.na(review))
+```
+```{r}
+names(review) = c('lie', 'sentiment','review')
+```
+
+```{r}
+review[review$sentiment == 'positive',]
+```
+```{r}
+review[review$sentiment == 'negative',]
+```
+```{r}
+#converting sentiment to factor
+review$sentiment = ifelse(review$sentiment == 'negative', 0, 1)
+review$sentiment = factor(review$sentiment, labels = c('negative','positive'))
+review$lie = ifelse(review$lie == 'fake', 0, 1)
+review$lie = factor(review$lie, labels = c('fake','true'))
+glimpse(review)
+```
+```{r}
+#introducing index for each review.
+review$Index = 1:nrow(review)
+review = relocate(review, Index, .before = sentiment)
+
+```
+
+```{r}
+#tokenization:
+review.tidy = review |>
+  unnest_tokens(word, review) # inputs to this function are name for output column then input column
+
+head(review.tidy)
+tail(review.tidy)
+```
+```{r}
+#removing stop words lowercase and blank entries
+head(stop_words)
+
+review.tidy = review.tidy |> 
+  
+  mutate(word = str_remove_all(word, '[^a-z]')) |>  # first, remove anything that is not a lowercase letter, using a regular expression. note that the unnest_tokens() function already converts letters to lower case. 
+  filter(word != '') |> # remove blank entries now that non-letters have been removed
+  
+  anti_join(stop_words)
+```
+```{r}
+head(review.tidy)
+tail(review.tidy)
+```
+```{r}
+#stemming and lemmitization
+review.tidy$word_stemmed = stem_words(review.tidy$word)
+
+review.tidy$word_lemmatized = lemmatize_words(review.tidy$word)
+
+review.tidy = review.tidy |> select(Index, lie, sentiment, word = word_lemmatized)
+```
+
+
+```{r}
+
+review.wide = review.tidy |> 
+  count(Index, word) |>  
+  spread(word, n, fill = 0, drop = FALSE) |> 
+  left_join(review |> select(Index, sentiment)) |> 
+  relocate(sentiment, .after = Index) |>
+left_join(review |> select(Index, lie)) |>
+  relocate(lie,.after=Index)
+```
+
+
+
+```{r}
+review.wide[1:5, 1:5]
+```
+
+
+
+```{r}
+index1 = createDataPartition(y=review.wide$sentiment, p=0.75, list=FALSE)
+index2 = createDataPartition(y=review.wide$lie, p=0.75, list=FALSE)
+
+
+train_sentiment <- review.wide[index1,]
+test_sentiment <- review.wide[-index1,]
+
+train_lie <- review.wide[index2,]
+test_lie <- review.wide[-index2,]
+
+train_sentiment <- subset(train_sentiment, select = -c(lie))
+train_sentiment <- subset(train_sentiment, select = -c(Index))
+test_sentiment <- subset(test_sentiment, select = -c(lie))
+test_sentiment <- subset(test_sentiment, select = -c(Index))
+
+train_lie <- subset(train_lie, select = -c(sentiment))
+train_lie <- subset(train_lie, select = -c(Index))
+test_lie <- subset(test_lie, select = -c(sentiment))
+test_lie <- subset(test_lie, select = -c(Index))
+```
+
+
+
+```{r}
+### Fit a SVM model
+# these parameters are specific to a polynomial kernel
+search.grid = expand.grid(degree = c(1, 2, 3),
+                          scale = c(0.001, 0.01, 0.1, 1.0),
+                          C = seq(0.1, 2, length = 10))
+
+# set up 5-fold cross validation
+train.control = trainControl(
+  method = 'cv', 
+  number = 5
+  )
+
+svm.m1 = train(sentiment ~.,
+               data = train_sentiment,
+               method = 'svmPoly',
+               trControl = train.control,
+               tuneGrid = search.grid)
+```
+Look at the best model in the tuning grid
+```{r}
+svm.m1$results |> top_n(n = 2, wt = Accuracy)
+```
+
+
+
+```{r}
+p1 = predict(svm.m1, newdata = test_sentiment)
+confusionMatrix(p1, test_sentiment$sentiment)
+```
+```{r}
+### Fit a SVM model
+# these parameters are specific to a polynomial kernel
+search.grid = expand.grid(degree = c(1, 2, 3),
+                          scale = c(0.001, 0.01, 0.1, 1.0),
+                          C = seq(0.1, 2, length = 10))
+
+# set up 5-fold cross validation
+train.control = trainControl(
+  method = 'cv', 
+  number = 5
+  )
+
+svm.m2 = train(lie ~.,
+               data = train_lie,
+               method = 'svmPoly',
+               trControl = train.control,
+               tuneGrid = search.grid)
+```
+Look at the best model in the tuning grid
+```{r}
+svm.m2$results |> top_n(n = 2, wt = Accuracy)
+```
+
+
+
+```{r}
+p2 = predict(svm.m2, newdata = test_lie)
+confusionMatrix(p2, test_lie$lie)
+```
+```{r}
+f1 = setdiff(names(train_sentiment), 'sentiment') 
+a = train_sentiment[, f1]
+b = train_sentiment$sentiment
+
+
+train_control_nb = trainControl(
+  method = 'cv', 
+  number = 5,
+  )
+
+review_grid_nb = expand.grid(usekernel = c(TRUE, FALSE),
+                          laplace = c(0, 1), 
+                          adjust = c(0,1,2))
+
+options(warnings = -1)
+
+nb.m1 = train(
+  x = a,
+  y = b,
+  method = 'naive_bayes',
+  trControl = train_control_nb,
+  tuneGrid =  review_grid_nb
+  )
+
+
+nb.m1$results |> top_n(n = 1, wt=Accuracy)
+
+```
+```{r}
+p3 = predict(nb.m1, newdata = test_sentiment)
+confusionMatrix(p3, test_sentiment$sentiment)
+
+```
+```{r}
+f2 = setdiff(names(train_lie), 'lie') 
+a = train_lie[, f2]
+b = train_lie$lie
+
+
+train_control_nb = trainControl(
+  method = 'cv', 
+  number = 5,
+  )
+
+review_grid_nb = expand.grid(usekernel = c(TRUE, FALSE),
+                          laplace = c(0, 1), 
+                          adjust = c(0,1,2))
+
+options(warnings = -1)
+
+nb.m2 = train(
+  x = a,
+  y = b,
+  method = 'naive_bayes',
+  trControl = train_control_nb,
+  tuneGrid =  review_grid_nb
+  )
+
+
+nb.m2$results |> top_n(n = 1, wt=Accuracy)
+
+```
+
+```{r}
+p4 = predict(nb.m2, newdata = test_lie)
+confusionMatrix(p4, test_lie$lie)
+
+```
+
+
+
+
+
+
+
+
+
+
